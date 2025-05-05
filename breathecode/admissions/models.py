@@ -9,6 +9,7 @@ from django import forms
 from django.contrib.auth.models import User
 from django.core.validators import MaxValueValidator, MinValueValidator, RegexValidator
 from django.db import models
+from django.utils import timezone as django_timezone
 
 from . import signals
 from .signals import syllabus_version_json_updated
@@ -510,6 +511,7 @@ class CohortUser(models.Model):
         max_length=15, choices=EDU_STATUS, default=ACTIVE, null=True, blank=True, db_index=True
     )
 
+    educational_status_updated_at = models.DateTimeField(auto_now=True, editable=True)
     created_at = models.DateTimeField(auto_now_add=True, editable=False)
     updated_at = models.DateTimeField(auto_now=True, editable=False)
 
@@ -539,6 +541,7 @@ class CohortUser(models.Model):
         result = super().save(*args, **kwargs)  # Call the "real" save() method.
 
         if edu_status_updated:
+            self.educational_status_updated_at = django_timezone.now()
             signals.student_edu_status_updated.send_robust(instance=self, sender=self.__class__)
 
         signals.cohort_log_saved.send_robust(instance=self, sender=self.__class__)
