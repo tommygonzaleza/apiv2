@@ -20,7 +20,7 @@ from rest_framework.response import Response
 import breathecode.activity.tasks as tasks_activity
 from breathecode.admissions import tasks as admissions_tasks
 from breathecode.admissions.models import Academy, Cohort
-from breathecode.authenticate.actions import get_user_language
+from breathecode.authenticate.actions import get_academy_from_body, get_user_language
 from breathecode.payments import actions, tasks
 from breathecode.payments.actions import (
     PlanFinder,
@@ -59,6 +59,7 @@ from breathecode.payments.models import (
 from breathecode.payments.serializers import (
     GetAcademyServiceSmallSerializer,
     GetBagSerializer,
+    GetConsumptionSessionSerializer,
     GetCouponSerializer,
     GetEventTypeSetSerializer,
     GetEventTypeSetSmallSerializer,
@@ -1226,8 +1227,9 @@ class CardView(APIView):
 
     def post(self, request):
         lang = get_user_language(request)
+        academy = get_academy_from_body(request.data, lang=lang, raise_exception=True)
 
-        s = Stripe()
+        s = Stripe(academy=academy)
         s.set_language(lang)
         s.add_contact(request.user)
 
@@ -1297,6 +1299,27 @@ class ServiceBlocked(APIView):
 
 
 class ConsumeView(APIView):
+    extensions = APIViewExtensions(sort="-id", paginate=True)
+
+    def get(self, request, service_slug):
+        handler = self.extensions(request)
+        lang = get_user_language(request)
+
+        if not (service := Service.objects.filter(slug=service_slug).first()):
+            raise ValidationException(
+                translation(lang, en="Service not found", es="Servicio no encontrado", slug="service-not-found"),
+                code=404,
+            )
+
+        items = ConsumptionSession.objects.filter(consumable__service_item__service=service, user=request.user)
+
+        if status := request.GET.get("status"):
+            items = items.filter(status__in=status.split(","))
+
+        items = handler.queryset(items)
+        serializer = GetConsumptionSessionSerializer(items, many=True)
+
+        return Response(serializer.data)
 
     def put(self, request, service_slug, hash=None):
         lang = get_user_language(request)
@@ -1562,8 +1585,9 @@ class BagView(APIView):
 
     def put(self, request):
         lang = get_user_language(request)
+        academy = get_academy_from_body(request.data, lang=lang, raise_exception=True)
 
-        s = Stripe()
+        s = Stripe(academy=academy)
         s.set_language(lang)
         s.add_contact(request.user)
 
@@ -1998,12 +2022,13 @@ class ConsumableCheckoutView(APIView):
                 code=400,
             )
 
-        s = None
+        academy = get_academy_from_body(request.data, lang=lang, raise_exception=True)
+        s = Stripe(academy=academy)
+
         invoice = None
         with transaction.atomic():
             sid = transaction.savepoint()
             try:
-                s = Stripe(academy=Academy.objects.get(id=academy))
                 s.set_language(lang)
                 s.add_contact(request.user)
                 service_item, _ = ServiceItem.objects.get_or_create(service=service, how_many=total_items)
@@ -2015,7 +2040,7 @@ class ConsumableCheckoutView(APIView):
                     was_delivered=True,
                     user=request.user,
                     currency=currency,
-                    academy_id=academy,
+                    academy=academy,
                     is_recurrent=False,
                     country_code=country_code,  # Store the country code for future reference
                     pricing_ratio_explanation=pricing_ratio_explanation,
@@ -2062,7 +2087,6 @@ class ConsumableCheckoutView(APIView):
 
             except Exception as e:
                 if invoice:
-                    s = Stripe(academy=Academy.objects.get(id=academy))
                     s.set_language(lang)
                     s.refund_payment(invoice)
 
@@ -2295,7 +2319,7 @@ class PayView(APIView):
                     )
 
                 if amount >= 0.50:
-                    s = Stripe()
+                    s = Stripe(academy=bag.academy)
                     s.set_language(lang)
                     invoice = s.pay(request.user, bag, amount, currency=bag.currency.code)
 

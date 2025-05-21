@@ -177,6 +177,10 @@ CAPABILITIES = [
         "slug": "upload_assignment_telemetry",
         "description": "Allow upload the user's telemetry in a LearnPack assignment",
     },
+    {
+        "slug": "validate_assignment_flag",
+        "description": "Ideal for CTFs and other assignments that require flag validation",
+    },
 ]
 
 ROLES = [
@@ -216,9 +220,11 @@ ROLES = [
             "read_keywordcluster",
             "crud_academyservice",
             "crud_event",
+            "crud_flag",
             "crud_mentorship_session",
             "read_calendly_organization",
             "crud_subscription",
+            "validate_assignment_flag",
         ],
     },
     {
@@ -321,6 +327,7 @@ ROLES = [
             "read_service",
             "read_academyservice",
             "upload_assignment_telemetry",
+            "validate_assignment_flag",
         ],
     },
 ]
@@ -383,6 +390,7 @@ def extend_roles(roles: list[RoleType]) -> None:
                 "read_content_variables",
                 "crud_content_variables",
                 "crud_assessment",
+                "crud_flag",
             ],
         }
     )
@@ -419,6 +427,7 @@ def extend_roles(roles: list[RoleType]) -> None:
                 "read_certificate",
                 "crud_certificate",
                 "crud_shortlink",
+                "crud_cohort",
                 "read_mentorship_mentor",
                 "crud_mentorship_mentor",
                 "read_mentorship_service",

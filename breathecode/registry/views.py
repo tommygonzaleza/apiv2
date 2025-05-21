@@ -29,6 +29,7 @@ from breathecode.authenticate.models import ProfileAcademy, User
 from breathecode.notify.actions import send_email_message
 from breathecode.registry.permissions.consumers import asset_by_slug
 from breathecode.services.seo import SEOAnalyzer
+from breathecode.utils.decorators import has_permission
 from breathecode.utils import GenerateLookupsMixin, capable_of, consume
 from breathecode.utils.api_view_extensions.api_view_extensions import APIViewExtensions
 from breathecode.utils.decorators.capable_of import acapable_of
@@ -74,6 +75,7 @@ from .serializers import (
     AssetKeywordBigSerializer,
     AssetKeywordSerializer,
     AssetMidSerializer,
+    AssetPUTMeSerializer,
     AssetPUTSerializer,
     AssetSerializer,
     AssetTechnologySerializer,
@@ -84,6 +86,7 @@ from .serializers import (
     OriginalityScanSerializer,
     PostAssetCommentSerializer,
     PostAssetSerializer,
+    PostAcademyAssetSerializer,
     POSTCategorySerializer,
     PostKeywordClusterSerializer,
     PostKeywordSerializer,
@@ -719,11 +722,18 @@ class AssetView(APIView, GenerateLookupsMixin):
         if "slug" in self.request.GET:
             asset_type = self.request.GET.get("asset_type", None)
             param = self.request.GET.get("slug")
-            asset = Asset.get_by_slug(param, request, asset_type=asset_type)
-            if asset is not None:
-                lookup["slug"] = asset.slug
+            slugs = [s.strip() for s in param.split(",")]
+
+            # For single slug, try to get exact asset to maintain backward compatibility
+            if len(slugs) == 1:
+                asset = Asset.get_by_slug(slugs[0], request, asset_type=asset_type)
+                if asset is not None:
+                    lookup["slug"] = asset.slug
+                else:
+                    lookup["slug"] = slugs[0]
             else:
-                lookup["slug"] = param
+                # For multiple slugs, filter by all provided slugs
+                lookup["slug__in"] = slugs
 
         if "language" in self.request.GET:
             param = self.request.GET.get("language")
@@ -790,6 +800,125 @@ class AssetView(APIView, GenerateLookupsMixin):
             serializer = AssetSerializer(items, many=True)
 
         return handler.response(serializer.data)
+
+    @has_permission("learnpack_create_package")
+    def put(self, request, asset_slug=None):
+
+        logged_in_user = request.user
+        data_list = request.data
+        if not isinstance(request.data, list):
+
+            # make it a list
+            data_list = [request.data]
+
+            if asset_slug is None:
+                raise ValidationException("Missing asset_slug")
+
+            asset = Asset.objects.filter(slug__iexact=asset_slug, owner=logged_in_user).first()
+            if asset is None:
+                raise ValidationException(f"This asset {asset_slug} does not exist or you don't have access to it", 404)
+
+            data_list[0]["id"] = asset.id
+
+        all_assets = []
+        for data in data_list:
+
+            if "technologies" in data and len(data["technologies"]) > 0 and isinstance(data["technologies"][0], str):
+                technology_ids = AssetTechnology.objects.filter(slug__in=data["technologies"]).values_list(
+                    "pk", flat=True
+                )
+                delta = len(data["technologies"]) - len(technology_ids)
+                if delta != 0:
+                    raise ValidationException(f"{delta} of the assigned technologies for this asset are not found")
+
+                data["technologies"] = technology_ids
+
+            if "seo_keywords" in data and len(data["seo_keywords"]) > 0:
+                if isinstance(data["seo_keywords"][0], str):
+                    data["seo_keywords"] = AssetKeyword.objects.filter(slug__in=data["seo_keywords"]).values_list(
+                        "pk", flat=True
+                    )
+
+            if (
+                "all_translations" in data
+                and len(data["all_translations"]) > 0
+                and isinstance(data["all_translations"][0], str)
+            ):
+                data["all_translations"] = Asset.objects.filter(slug__in=data["all_translations"]).values_list(
+                    "pk", flat=True
+                )
+
+            if "id" not in data:
+                raise ValidationException("Cannot determine asset id", slug="without-id")
+
+            instance = Asset.objects.filter(id=data["id"], owner=logged_in_user).first()
+            if not instance:
+                raise ValidationException(
+                    f"Asset({data["id"]}) does not exist or you don't have access to it", code=404, slug="not-found"
+                )
+            all_assets.append(instance)
+
+        all_serializers = []
+        index = -1
+        for data in data_list:
+            index += 1
+            serializer = AssetPUTMeSerializer(all_assets[index], data=data, context={"request": request})
+            all_serializers.append(serializer)
+            if not serializer.is_valid():
+                return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        all_assets = []
+        for serializer in all_serializers:
+            all_assets.append(serializer.save())
+
+        if isinstance(request.data, list):
+            serializer = AcademyAssetSerializer(all_assets, many=True)
+        else:
+            serializer = AcademyAssetSerializer(all_assets.pop(), many=False)
+
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @has_permission("learnpack_create_package")
+    def post(self, request):
+
+        data = {
+            **request.data,
+        }
+
+        if "seo_keywords" in data and len(data["seo_keywords"]) > 0:
+            if isinstance(data["seo_keywords"][0], str):
+                data["seo_keywords"] = AssetKeyword.objects.filter(slug__in=data["seo_keywords"]).values_list(
+                    "pk", flat=True
+                )
+
+        if (
+            "all_translations" in data
+            and len(data["all_translations"]) > 0
+            and isinstance(data["all_translations"][0], str)
+        ):
+            data["all_translations"] = Asset.objects.filter(slug__in=data["all_translations"]).values_list(
+                "pk", flat=True
+            )
+
+        if "technologies" in data and len(data["technologies"]) > 0 and isinstance(data["technologies"][0], str):
+            technology_ids = (
+                AssetTechnology.objects.filter(slug__in=data["technologies"])
+                .values_list("pk", flat=True)
+                .order_by("sort_priority")
+            )
+            delta = len(data["technologies"]) - len(technology_ids)
+            if delta != 0:
+                raise ValidationException(f"{delta} of the assigned technologies for this asset are not found")
+
+            data["technologies"] = technology_ids
+
+        serializer = PostAssetSerializer(data=data, context={"request": request})
+        if serializer.is_valid():
+            instance = serializer.save()
+            if instance.github_url:
+                async_pull_from_github.delay(instance.slug)
+            return Response(AssetBigSerializer(instance).data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 class AssetContextView(APIView, GenerateLookupsMixin):
@@ -1347,7 +1476,7 @@ class AcademyAssetView(APIView, GenerateLookupsMixin):
 
             data["technologies"] = technology_ids
 
-        serializer = PostAssetSerializer(data=data, context={"request": request, "academy": academy_id})
+        serializer = PostAcademyAssetSerializer(data=data, context={"request": request, "academy": academy_id})
         if serializer.is_valid():
             instance = serializer.save()
             async_pull_from_github.delay(instance.slug)

@@ -1131,7 +1131,7 @@ def get_github_token(request, token=None):
     if url == None:
         raise ValidationException("No callback URL specified", slug="no-callback-url")
 
-    scopes = request.query_params.get("scope", "user")
+    scopes = request.query_params.get("scope", "user:email")
     if token is not None:
         _tkn = Token.get_valid(token)
         if _tkn is None:
@@ -1150,9 +1150,6 @@ def get_github_token(request, token=None):
         "redirect_uri": os.getenv("GITHUB_REDIRECT_URL", "") + f"?url={url}",
         "scope": scopes,
     }
-
-    logger.debug("Redirecting to github")
-    logger.debug(params)
 
     redirect = f"https://github.com/login/oauth/authorize?{urlencode(params)}"
 
@@ -1306,10 +1303,23 @@ async def save_github_token(request):
         if invite:
             academy = invite.academy
 
+        companyName = "4Geeks"
+        if "4geeks" not in url:
+            parsed_url = urlparse(url)
+            domain = (
+                parsed_url.netloc.split(".")[1]
+                if parsed_url.netloc.startswith("www.")
+                else parsed_url.netloc.split(".")[0]
+            )
+            if "learnpack" in domain:
+                companyName = "LearnPack"
+            else:
+                companyName = domain.capitalize()
+
         return render_message(
             request,
             "We could not find in our records the email associated to this github account, "
-            'perhaps you want to signup to the platform first? <a href="' + url + '">Back to 4Geeks.com</a>',
+            'perhaps you want to sign up to first? <a href="' + url + '">Back to ' + companyName + "</a>",
             academy=academy,
         )
 
@@ -1346,7 +1356,7 @@ async def save_github_token(request):
 
         return await redirect_to_get_access_token()
 
-    required_scopes = await aget_github_scopes(user, "user")
+    required_scopes = await aget_github_scopes(user, "user:email")
 
     if required_scopes != github_credentials.scopes or required_scopes != scopes:
         github_credentials.scopes = required_scopes
@@ -1900,6 +1910,18 @@ def pick_password(request, token):
                     if "heading" not in obj:
                         obj["heading"] = invite.academy.name
 
+                # Determine app_url from invite's conversion_info if available
+                app_url = os.getenv("APP_URL", "https://4geeks.com")
+                if invite and invite.conversion_info and isinstance(invite.conversion_info, dict):
+                    landing_url = invite.conversion_info.get("landing_url")
+                    if landing_url:
+                        try:
+                            parsed_url = urlparse(landing_url)
+                            app_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
+                        except Exception:
+                            # If any error parsing URL, fallback to default app_url
+                            pass
+
                 return shortcuts.render(
                     request,
                     "message.html",
@@ -1907,7 +1929,7 @@ def pick_password(request, token):
                         "MESSAGE": "You password has been successfully set.",
                         "BUTTON": "Continue to sign in",
                         "BUTTON_TARGET": "_self",
-                        "LINK": os.getenv("APP_URL", "https://4geeks.com") + "/login",
+                        "LINK": app_url + "/login",
                         **obj,
                     },
                 )
